@@ -15,6 +15,9 @@ class ScreenFinder:
         self.hough_lines = None
         self.v_hough_lines = None
         self.h_hough_lines = None
+
+        self.bounding_lines = None
+        self.intersections = None
         self.bounding_box = None
 
     def find_hough_lines(self, rho: float = 1.0, theta: float = np.pi/180, thresh: int = 100) -> np.ndarray:  # TODO currently just vertical and horizontal, but maybe want to do pairs of perpendiculars with ~5 degree separation
@@ -38,9 +41,9 @@ class ScreenFinder:
 
         return self.hough_lines
     
-    def find_smallest_bounding_box(self, target_point: Tuple[int, int] | None = None):
+    def find_nearest_bounding_lines(self, target_point: Tuple[int, int] | None = None):
         """
-        Extracts the nearest Hough lines (vertical, horizontal) to left, top, right, and below the central point
+        Extracts the nearest Hough lines (vertical, horizontal) to left, top, right, and below the target points
         
         Parameters
         ----------
@@ -70,7 +73,7 @@ class ScreenFinder:
         left_line = self._find_nearest_hough_line(left_lines, 0, 0, target_point=target_point)
         right_line = self._find_nearest_hough_line(right_lines, w, 0, target_point=target_point)
 
-        self.hough_lines = np.array([top_line, bottom_line, left_line, right_line])
+        self.bounding_lines = np.array([top_line, bottom_line, left_line, right_line])
     
     def _find_nearest_hough_line(self, lines: np.ndarray, default_rho: float, default_theta: float, target_point: Tuple[int, int] | None = None) -> Tuple[float, float]:
         """
@@ -102,7 +105,86 @@ class ScreenFinder:
         
         return nearest_line
     
-    
+    def generate_warp_matrix(self, show_box: bool = False, target_image: np.ndarray | None = None) -> np.ndarray:
+        """
+        Uses the four nearest to centre hough lines to generate the warp matrix for the image to the erg screen
+        at the provided scale - optionally displays the bounding box
+
+        Parameters
+        ----------
+            show_box: toggle for displaying the bounding box
+        
+        Returns
+        -------
+            M: the warping matrix
+            targ_w: the target height
+            targ_h: the target width
+        """
+        # Get intersections
+        self.intersections = self._get_bounding_intersections()
+
+        # Intersection points in TL, TR, BL, BR order
+        sorted_pts = self.intersections[np.argsort(self.intersections[:, 1])]
+        TL, TR = sorted_pts[:2][np.argsort(sorted_pts[:2, 0])]
+        BL, BR = sorted_pts[2:][np.argsort(sorted_pts[2:, 0])]
+
+        # Crop image
+        source_pts = np.array([TL, TR, BL, BR], dtype="float32")
+        targ_w = max(int(np.linalg.norm(TL - TR)), int(np.linalg.norm(BL - BR)))
+        targ_h = max(int(np.linalg.norm(TL - BL)), int(np.linalg.norm(TR - BR)))
+
+        dest_pts = np.array([[0, 0],
+                             [targ_w - 1, 0],
+                             [0, targ_h - 1],
+                             [targ_w - 1, targ_h - 1]],
+                             dtype="float32")
+
+        M = cv2.getPerspectiveTransform(source_pts, dest_pts)
+
+        if show_box:
+            if target_image is None:
+                raise ValueError("No target image to draw box on")
+            rect = cv2.minAreaRect(np.array(self.intersections))
+            box = cv2.boxPoints(rect)
+            box = np.int0(box)
+            cv2.drawContours(target_image, [box], 0, (0, 255, 0), 2)
+            plt.imshow(target_image)
+            plt.show()
+
+        return M, targ_w, targ_h
+
+    def _get_bounding_intersections(self, atol=1e-10) -> np.ndarray:
+        """Helper method to find the intersections of the bounding lines"""
+        # Confirm bounding lines exist
+        if self.bounding_lines is None:
+            raise ValueError("No bounding lines to use")
+        
+        # Get intersections - lines are in top, bottom, left, right order
+        intersections = []
+        h_lines = self.bounding_lines[:2]
+        v_lines = self.bounding_lines[2:]
+
+        for v_rho, v_theta in v_lines[:, 0]:
+            for h_rho, h_theta in h_lines[:, 0]:
+                A = np.array([[np.cos(v_theta), np.sin(v_theta)],
+                              [np.cos(h_theta), np.sin(h_theta)]])
+                b = np.array([v_rho, h_rho])
+
+                det = np.linalg.det(A)
+                if np.isclose(det, 0, atol=atol):
+                    raise ValueError("No interesection found for some lines, lines are near parallel")
+                
+                x, y = np.linalg.solve(A, b)
+                intersections.append((x, y))
+        
+        # Check intersections in bounds
+        h, w = self.processed_edges.shape[:2]
+        tol = 10
+        for x, y in intersections:
+            if (x + tol) < 0 or (x - tol) > w or (y + tol) < 0 or (y - tol) > h:
+                raise ValueError("Intersections outside image, cannot find suitable intersections")
+        
+        return np.array(intersections)
 
     def show_hough_lines(self, target_img: np.ndarray, color: Tuple[int, int, int] = (0, 0, 255), thickness: int = 2) -> np.ndarray:
         """
@@ -140,6 +222,7 @@ class ScreenFinder:
 
 
 if __name__ == "__main__":
+    import time
     path = "C:/Users/isaac/OneDrive/Documents/Coding/PythonCoding/ComputerVisionProjects/Erg Screen Identifier/ErgScreenImages/March25Erg.jpg"
     img = cv2.imread(path)
 
@@ -150,29 +233,57 @@ if __name__ == "__main__":
     "edges": (25, 75),
     }
 
+    t1 = time.perf_counter()
     img_handler = ImageHandler(img)
 
     # Process image as needed
+    t2 = time.perf_counter()
     handler = img_handler.to_gray(target=img_handler.img)
 
+    t3 = time.perf_counter()
     scale = PREPROCESS_PARAMS["resize"]
     handler = img_handler.resize((scale, scale), target=handler.gray)
     
+    t4 = time.perf_counter()
     eq_mode, clip_limit, tile_size = PREPROCESS_PARAMS["equalize"]
     handler.equalize(eq_mode, clip_limit, tile_size, target=handler.resized)
 
+    t5 = time.perf_counter()
     blur_size = PREPROCESS_PARAMS["blur"]
     handler.blur(blur_size, target=handler.equalized)
 
+    t6 = time.perf_counter()
     thresh_low, thresh_high = PREPROCESS_PARAMS["edges"]
     handler.find_edges(thresh_low, thresh_high, target=handler.blurred)
 
+    t7 = time.perf_counter()
     screen_finder = ScreenFinder(handler.edges)
     # img_handler.display("edges")
+    t8 = time.perf_counter()
     screen_finder.find_hough_lines()
-    screen_finder.find_smallest_bounding_box()
 
+    t9 = time.perf_counter()
+    screen_finder.find_nearest_bounding_lines()
 
-    disp_img = screen_finder.show_hough_lines(img_handler.resized)
-    plt.imshow(disp_img, cmap='gray')
+    t10 = time.perf_counter()
+    M, width, height = screen_finder.generate_warp_matrix()
+
+    warped = cv2.warpPerspective(handler.resized, M, (width, height))
+    plt.imshow(warped)
     plt.show()
+
+    t_end = time.perf_counter()
+    print(f"Time for ImageHandler creation was {t_end - t1}")
+    print(f"Time for gray conversion was {t_end - t2}")
+    print(f"Time for resizing was {t_end - t3}")
+    print(f"Time for equalizing was {t_end - t4}")
+    print(f"Time for blurring was {t_end - t5}")
+    print(f"Time for edge finding was {t_end - t6}")
+    print(f"Time for ScreenFinder creation was {t_end - t7}")
+    print(f"Time for Finding Hough Lines - Vertical and Horizontal was {t_end - t8}")
+    print(f"Time for Finding Nearest Bounding Lines was {t_end - t9}")
+    print(f"Time for Creating the Bounding Box was {t_end - t10}")
+
+    # disp_img = screen_finder.show_hough_lines(img_handler.resized)
+    # plt.imshow(disp_img, cmap='gray')
+    # plt.show()
