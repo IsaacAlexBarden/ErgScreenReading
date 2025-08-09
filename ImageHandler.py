@@ -2,11 +2,14 @@ import cv2
 import os
 import numpy as np
 import functools
+import matplotlib.pyplot as plt
+
 from win32api import GetSystemMetrics  # TODO change to be cross system
 
 from typing import Tuple, Callable
 
 # TODO
+# Rewrite targetting so that strings are passed rather than images
 """
 crop
 rotate
@@ -42,24 +45,14 @@ class ImageHandler:
     def __init__(self, img):
         self.img = img
 
-        self.resized = None
         self.gray = None
-        self.equalized = None
+        self.resized = None
         self.blurred = None
+        self.normalized = None
+        self.equalized = None
         self.edges = None
 
         self.save_dir = None
-
-    @_resolve_target(lambda self: self.gray if self.gray is not None else self.img)
-    def resize(self, scale: Tuple[float, float] | None = None, *, target: np.ndarray) -> np.ndarray:
-        """
-        Resize and store target image - default is to screen size maintaining aspect ratio. Scale provided as (sx, sy), and is multiplied
-        Defaults to self.gray, then self.img if no target specified
-        """        
-        self.resized = self._resize_image(target, scale)
-        self._save_image(self.resized, "resized")
-
-        return self
 
     @_resolve_target(lambda self: self.img)
     def to_gray(self, *, target: np.ndarray):
@@ -79,22 +72,44 @@ class ImageHandler:
         self._save_image(self.gray, "gray")
         return self
 
-    @_resolve_target(lambda self: self.equalized if self.equalized is not None else self.gray)
+    @_resolve_target(lambda self: self.gray if self.gray is not None else self.img)
+    def resize(self, scale: float | None = None, *, target: np.ndarray) -> np.ndarray:
+        """
+        Resize and store target image - default is to screen size maintaining aspect ratio. Scale provided as (sx, sy), and is multiplied
+        Defaults to self.gray, then self.img if no target specified
+        """        
+        self.resized = self._resize_image(target, scale)
+        self._save_image(self.resized, "resized")
+
+        return self
+
+    @_resolve_target(lambda self: self.resized if self.resized is not None else self.gray)
     def blur(self, blur_size: Tuple[int, int], sigmaX: float = 0, sigmaY: float = 0, *, target: np.ndarray):
         """
         Blurs the target image
-        Defaults to self.equalized, then self.gray if no image supplied
+        Defaults to self.resized, then self.gray if no image supplied
         """
         self.blurred = cv2.GaussianBlur(target, blur_size, sigmaX=sigmaX, sigmaY=sigmaY)
         self._save_image(self.blurred, "blurred")
 
         return self
+    
+    @_resolve_target(lambda self: self.blurred if self.blurred is not None else self.gray)
+    def normalize(self, *, target: np.ndarray):
+        """
+        Performs normalization to 0-255 range
+        Defaults to self.blurred if no target is provided, gray otherwise
+        """
+        self.normalized = cv2.normalize(target, None, 0, 255, cv2.NORM_MINMAX)
+        self._save_image(self.normalized, "normalized")
+        
+        return self
 
-    @_resolve_target(lambda self: self.resized if self.resized is not None else self.gray)
+    @_resolve_target(lambda self: self.normalized if self.normalized is not None else self.gray)
     def equalize(self, mode='clahe', *args, target: np.ndarray):
         """
         Performs histogram equalization, in standard or clahe. Clahe requires a clipLimit and tileSize provided also
-        Defaults to self.resized if no target provided, then self.gray
+        Defaults to self.normalized if no target provided, then self.gray
         """
         if mode != "standard" and mode != "clahe":
             raise ValueError("Invalid equalization mode")
@@ -104,7 +119,7 @@ class ImageHandler:
         
         if mode == "clahe":
             if len(args) != 2:
-                raise ValueError("Clahe needs clipLimit and tileSize provided")
+                raise ValueError("Clahe needs clipLimit and tileSize provided in that order")
             clipLimit, tileSize = args
 
             clahe = cv2.createCLAHE(clipLimit=clipLimit, tileGridSize=tileSize)
@@ -113,11 +128,11 @@ class ImageHandler:
         self._save_image(self.equalized, "equalised")
         return self
 
-    @_resolve_target(lambda self: self.blurred if self.blurred is not None else self.equalized)
+    @_resolve_target(lambda self: self.equalized if self.equalized is not None else self.gray)
     def find_edges(self, thresh_low: int = 50, thresh_high: int = 100, *, target: np.ndarray):
         """
         Finds image edges using Canny edge detector
-        Defaults to self.blurred, then self.equalized if no target provided
+        Defaults to self.equalized, then self.gray if no target provided
         """
         self.edges = cv2.Canny(target, thresh_low, thresh_high)
         self._save_image(self.edges, "edges")
@@ -133,20 +148,14 @@ class ImageHandler:
             return True
         return False
     
-    def _resize_image(self, image: np.ndarray, scale: Tuple[float, float] | None = None) -> np.ndarray:
+    def _resize_image(self, image: np.ndarray, scale: float | None = None) -> np.ndarray:
         """Internal method for temporary resizing"""
         # Get scaling factors
         h, w = self.img.shape[:2]
         if scale is None:
-            screen_h, screen_w = GetSystemMetrics(1), GetSystemMetrics(0)
-            scale_x, scale_y = screen_w / w, screen_h / h
-            scale_factor = min(scale_x, scale_y)
-            new_w, new_h = int(w * scale_factor), int(h * scale_factor)
-        
-        else:
-            new_w, new_h = int(w * scale[0]), int(h * scale[1])
+            scale = 0.25
 
-        return cv2.resize(image, (new_w, new_h))
+        return cv2.resize(image, None, fx=scale, fy=scale)
 
     def display(self, step_name: str, resize: bool = True, scale: Tuple[float, float] | None = None) -> None:
         """
@@ -172,9 +181,15 @@ class ImageHandler:
         cv2.destroyAllWindows()
 
 
-
 if __name__ == "__main__":
-    img_path = "sample_image.jpg"
+    img_path = "C:/Users/isaac/OneDrive/Documents/Coding/PythonCoding/ComputerVisionProjects/Erg Screen Identifier/ErgScreenImages/March25Erg.jpg"
     img = cv2.imread(img_path)
-
     handler = ImageHandler(img)
+    handler.to_gray(target=handler.img)
+    handler.resize(scale=(0.25, 0.25), target=handler.gray)
+    handler.blur(blur_size=(35, 35), target=handler.resized)
+    handler.normalize(target=handler.blurred)
+    handler.equalize("clahe", 2.0, (8, 8), target=handler.normalized)
+    thresh = cv2.adaptiveThreshold(handler.equalized, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+    plt.imshow(thresh)
+    plt.show()
