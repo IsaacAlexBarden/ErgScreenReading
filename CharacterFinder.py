@@ -118,22 +118,28 @@ class CharacterFinder:
         Helper function to split the binary image into horizontal lines by text
         Joins together components whose centroids lie within some threshold of one another
         When we are no longer within the same line, we start a new line
+
+        lines are stored in self.horizontal_lines as tuples of (image, (x, y, w, h))
         """
-        _, labelled, stats, centroids = cv2.connectedComponentsWithStats(self.bin_image, connectivity=8)
+        kernel_size = 3
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, ksize=(kernel_size, kernel_size))
+        dilated = cv2.morphologyEx(self.bin_image, cv2.MORPH_DILATE, kernel)
+
+        _, labelled, stats, centroids = cv2.connectedComponentsWithStats(dilated, connectivity=8)
         
         # Ignore the background
         stats = stats[1:]
         centroids = centroids[1:]
         centroid_order = np.argsort(centroids[:, 1]) if len(centroids) else []
 
-        line_height_fraction = 25/550  # ~25 pixels high in a 550 pixel high image
-        in_same_line_threshold = line_height_fraction * self.bin_image.shape[0]  # Distance from current line centroid to region centroid
+        line_height_fraction = 25/550  # ~25 pixels high in a 550 pixel high image TODO check if fraction works
+        in_same_line_threshold = line_height_fraction * dilated.shape[0]  # Distance from current line centroid to region centroid
 
-        # Consider making the check the larger of the fraction or the median component size
-        comp_heights = stats[cv2.CC_STAT_HEIGHT, :]
-        median_height = np.median(comp_heights)
-        mean_height = np.mean(comp_heights)
-        print(median_height, mean_height)
+        component_heights = stats[:, cv2.CC_STAT_HEIGHT]
+        q25, q75 = np.percentile(component_heights, [25, 75])
+        mask = (component_heights >= q25) & (component_heights <= q75)
+        iq_mean_height = component_heights[mask].mean()
+
 
         # Build lines up
         horizontal_lines = []
@@ -145,7 +151,7 @@ class CharacterFinder:
             # Find best line for component
             for j, line in enumerate(horizontal_lines):
                 gap = abs(cy - line["center"])
-                if gap <= mean_height and (best_gap is None or gap < best_gap):
+                if gap <= iq_mean_height and (best_gap is None or gap < best_gap):
                     best_idx, best_gap = j, gap
                 
             
@@ -157,14 +163,20 @@ class CharacterFinder:
                 line["centroids"].append(cy)
                 line["center"] = float(np.mean(line["centroids"]))
 
+        
+
         # Convert lines to ndarrays
         horizontal_line_images = []
         for line in horizontal_lines:
             mask = np.isin(labelled, line["components"]).astype(np.uint8) * 255
             y_coords, x_coords = np.where(mask > 0)
             if y_coords.size and x_coords.size:
-                cropped = mask[y_coords.min():y_coords.max(), x_coords.min():x_coords.max()]
-                horizontal_line_images.append(cropped)
+                cropped_mask = mask[y_coords.min():y_coords.max(), x_coords.min():x_coords.max()]
+                cropped_bin_image = self.bin_image[y_coords.min():y_coords.max(), x_coords.min():x_coords.max()]
+                cropped = cropped_mask & cropped_bin_image  # To remove dilation, and ignore off line elements
+
+                # Store image and bounding box for spatial position
+                horizontal_line_images.append((cropped, (x_coords.min(), y_coords.min(), x_coords.max() - x_coords.min(), y_coords.max() - y_coords.min())))
             
         self.horizontal_lines = horizontal_line_images
         return
@@ -176,13 +188,10 @@ class CharacterFinder:
         # Convert the image to binary and clean
         self._pre_process()
         self._clean_binary()
+        cv2.imwrite("CleanWorkingBinary.jpeg", self.bin_image * 255)
 
-        plt.imshow(self.bin_image)
-        plt.show()
-
-        # Process horizontal lines
         self._separate_by_horizontal_line()
-        for line in self.horizontal_lines:
+        for line, (_, _, _, _) in self.horizontal_lines:
             plt.imshow(line)
             plt.show()
 
@@ -191,8 +200,8 @@ if __name__ == "__main__":
     import time
     t1 = time.perf_counter()
     path = "C:/Users/isaac/OneDrive/Documents/Coding/PythonCoding/ComputerVisionProjects/Erg Screen Identifier/ErgScreenImages/March25Erg.jpg"
-    path = "C:/Users/isaac/OneDrive/Documents/Coding/PythonCoding/ComputerVisionProjects/Erg Screen Identifier/ErgScreenImages/April15Erg.jpg"
-    #path = "C:/Users/isaac/OneDrive/Documents/Coding/PythonCoding/ComputerVisionProjects/Erg Screen Identifier/ErgScreenImages/July08Erg.jpg"
+    # path = "C:/Users/isaac/OneDrive/Documents/Coding/PythonCoding/ComputerVisionProjects/Erg Screen Identifier/ErgScreenImages/April15Erg.jpg"
+    # path = "C:/Users/isaac/OneDrive/Documents/Coding/PythonCoding/ComputerVisionProjects/Erg Screen Identifier/ErgScreenImages/July08Erg.jpg"
     img = cv2.imread(path)
 
     PREPROCESS_PARAMS = {  # Erg screen specific
