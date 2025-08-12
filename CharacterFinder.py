@@ -10,9 +10,9 @@ from ScreenFinder import ScreenFinder
 
 class CharacterFinder:
     BINARIZE_PARAMS = {  # Erg screen specific
-    "equalize": ("clahe", 2.0, (8, 8)),
-    "blur": (7, 7),
-    "binarize": (255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 9, 2)
+    "equalize": ("clahe", 1.5, (16, 16)),
+    "blur": (1, 1),
+    "binarize": (255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 41, 16)
     }
     def __init__(self, screen_image):
         self.screen_image = screen_image
@@ -22,19 +22,19 @@ class CharacterFinder:
 
     def _pre_process(self):
         handler = ImageHandler(self.screen_image)
-        
-        mode, clipLimit, tileSize = CharacterFinder.BINARIZE_PARAMS["equalize"]
-        handler.equalize(mode, clipLimit, tileSize, target=handler.img)
 
         blur_kernel = CharacterFinder.BINARIZE_PARAMS["blur"]
-        handler.blur(blur_kernel, target=handler.equalized)
+        handler.blur(blur_kernel, target=handler.img)
+
+        mode, clipLimit, tileSize = CharacterFinder.BINARIZE_PARAMS["equalize"]
+        handler.equalize(mode, clipLimit, tileSize, target=handler.blurred)
 
         max_val, adpt_method, thresh_type, block_size, C = CharacterFinder.BINARIZE_PARAMS["binarize"]
-        self.bin_image = cv2.adaptiveThreshold(handler.blurred, maxValue=max_val, adaptiveMethod=adpt_method,
+        self.bin_image = cv2.adaptiveThreshold(handler.equalized, maxValue=max_val, adaptiveMethod=adpt_method,
                                           thresholdType=thresh_type, blockSize=block_size, C=C)
-        self.bin_image = 1 - self.bin_image // 255
+
         # Save the binary we are working on for review
-        cv2.imwrite("/Users/isaac/OneDrive/Documents/Coding/PythonCoding/ComputerVisionProjects/Erg Screen Identifier/Working Binary.jpeg", self.bin_image * 255)
+        cv2.imwrite("/Users/isaac/OneDrive/Documents/Coding/PythonCoding/ComputerVisionProjects/Erg Screen Identifier/WorkingBinary.jpeg", self.bin_image)
 
     def _clean_binary(self):
         self._remove_large_regions()
@@ -75,42 +75,15 @@ class CharacterFinder:
         We include distance checks to keep colons and similar present in text in the image
         as these are close to non-speck regions
         """
-        # First open to remove the tiniest specks
-        kernel_size = (3, 3)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_size)
-        opened = cv2.morphologyEx(self.bin_image, cv2.MORPH_OPEN, kernel)
-
-        # Second remove regions too far from characters - characters are of a certain area
-        h, w = self.bin_image.shape
-        min_char_area_ratio = 50 / 300000  # Based on July08Erg TODO numbers here as function params?
-        min_area_for_char = self.bin_image.size * min_char_area_ratio
-        char_height_estimate = h * 0.02  # 2% of image height
-        char_width_estimate = w * 0.02  # 2% of image width
-        max_allowable_dist_squared = (2 * char_height_estimate)**2 + (2 * char_width_estimate) ** 2  # Within 2 heights / 2 widths
+        _, labelled, stats, _ = cv2.connectedComponentsWithStats(self.bin_image, connectivity=8)
         
-        _, labelled, stats, centroids = cv2.connectedComponentsWithStats(opened, connectivity=8)
-        is_small = stats[:, cv2.CC_STAT_AREA] < min_area_for_char
-        is_large = ~is_small
-
+        # Just remove all smalls
+        small_speck_size = 5
+        is_small = stats[:, cv2.CC_STAT_AREA] < small_speck_size
         small_indices = np.where(is_small)[0]
-        large_indices = np.where(is_large)[0]
-        small_centroids = centroids[small_indices]
-        large_centroids = centroids[large_indices]
-
-        # If nothing large is found we have no characters
-        if len(large_centroids) == 0:
-            raise ValueError("No Characters Found")
-        
-        x_dists = small_centroids[:, 0:1] - large_centroids[:, 0]  # Slice this way to broadcast
-        y_dists = small_centroids[:, 1:2] - large_centroids[:, 1]
-        euclid_dists_squared = x_dists**2 + y_dists**2
-
-        should_remove_speck = np.all(euclid_dists_squared > max_allowable_dist_squared, axis=1)
-        for label, remove in zip(small_indices, should_remove_speck):
-            if remove:
-                opened[labelled == label] = 0
-        
-        self.bin_image = opened
+        small_indices = small_indices[small_indices != 0]
+        mask_small = np.isin(labelled, small_indices)
+        self.bin_image[mask_small] = 0
         return
     
     def _separate_by_horizontal_line(self):
@@ -163,8 +136,6 @@ class CharacterFinder:
                 line["centroids"].append(cy)
                 line["center"] = float(np.mean(line["centroids"]))
 
-        
-
         # Convert lines to ndarrays
         horizontal_line_images = []
         for line in horizontal_lines:
@@ -181,27 +152,24 @@ class CharacterFinder:
         self.horizontal_lines = horizontal_line_images
         return
         
-    def _separate_by_character(self):
-        pass
-
-    def _binarize(self):
+    def get_characters(self):
         # Convert the image to binary and clean
         self._pre_process()
         self._clean_binary()
-        cv2.imwrite("CleanWorkingBinary.jpeg", self.bin_image * 255)
+        cv2.imwrite("CleanWorkingBinary.jpeg", self.bin_image)
 
         self._separate_by_horizontal_line()
-        for line, (_, _, _, _) in self.horizontal_lines:
+        for line, (_,_,_,_) in self.horizontal_lines:
             plt.imshow(line)
             plt.show()
+        self._separate_by_character()
 
 
 if __name__ == "__main__":
     import time
     t1 = time.perf_counter()
-    path = "C:/Users/isaac/OneDrive/Documents/Coding/PythonCoding/ComputerVisionProjects/Erg Screen Identifier/ErgScreenImages/March25Erg.jpg"
-    # path = "C:/Users/isaac/OneDrive/Documents/Coding/PythonCoding/ComputerVisionProjects/Erg Screen Identifier/ErgScreenImages/April15Erg.jpg"
-    # path = "C:/Users/isaac/OneDrive/Documents/Coding/PythonCoding/ComputerVisionProjects/Erg Screen Identifier/ErgScreenImages/July08Erg.jpg"
+    path = "C:/Users/isaac/OneDrive/Documents/Coding/PythonCoding/ComputerVisionProjects/Erg Screen Identifier/ErgScreenImages/April15Erg.jpg"
+    path = "C:/Users/isaac/OneDrive/Documents/Coding/PythonCoding/ComputerVisionProjects/Erg Screen Identifier/ErgScreenImages/July08Erg.jpg"
     img = cv2.imread(path)
 
     PREPROCESS_PARAMS = {  # Erg screen specific
@@ -235,6 +203,7 @@ if __name__ == "__main__":
     warp_handler.to_gray(target=warp_handler.img)
     warp_handler.resize(scale, target=warp_handler.gray)
     char_extract = CharacterFinder(warp_handler.resized)
-    char_extract._binarize()
+    char_extract.get_characters()
+
 
 
