@@ -13,7 +13,7 @@ class ScreenFinder:
         self.erg_screen = None
 
     def _get_candidate_screen_locations(self, min_area: int = 10000, min_aspect: float = 0.5, max_aspect: float = 1.8) -> List:
-        """Extracts the erg screen bounding box from the supplied edges as a x, y, w, h tuple"""
+        """Extracts the possible erg screen bounding boxes from the supplied edges as a x, y, w, h tuple"""
         closed_edges = cv2.morphologyEx(self.edges, cv2.MORPH_CLOSE, kernel=cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))  # TODO remove this magic number
         contours, _ = cv2.findContours(closed_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
@@ -31,6 +31,10 @@ class ScreenFinder:
 
     
     def _is_valid_bbox(self, bbox: Tuple[int, int, int, int], min_aspect: float, max_aspect: float) -> bool:
+        """
+        A valid bounding box is one with allowable aspect ratio,
+        and within a certain distance from the screen centre
+        """
         x, y, w, h = bbox
         aspect = w / float(h)  # Ensure aspect doesnt round
         cx, cy = x + w // 2, y + h // 2  # TODO set distance to centre allowable?
