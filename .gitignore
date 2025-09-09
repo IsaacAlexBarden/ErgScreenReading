@@ -6,3 +6,6 @@ __pycache__/
 .env
 ErgScreenImages/
 starting.py
+char_data/
+Templates/
+runs/
