@@ -1,8 +1,13 @@
-"""Script to extract regions of interest from a sample image (July08Erg). These are View Detail, meter, watt, time, /500m, s/m, 'heart'"""
+"""
+Script to extract regions of interest from a sample image (July08Erg). These are View Detail, meter, watt, time, /500m, s/m, 'heart'
+Magic numbers are intentional, they all relate to the specified image_path, if this is changed all numbers must be adjusted
+"""
 import cv2
 import numpy as np
 from pathlib import Path
 from enum import Enum, auto
+
+TEMPLATE_BOUNDING_BOX = (417, 832, 2263, 2237)
 
 class TemplateType(Enum):
     VIEW_DETAIL = auto()
@@ -11,8 +16,8 @@ class TemplateType(Enum):
     PER_500_M = auto()
     S_PER_M = auto()
     HEART_RATE = auto()
-    WATT = auto()
-    CAL = auto()
+    # WATT = auto() TODO find suitable template images
+    # CAL = auto()
 
 def template_preprocess(template: np.ndarray) -> np.ndarray:
     """Process the template, separate function for repeatability within template matcher."""
